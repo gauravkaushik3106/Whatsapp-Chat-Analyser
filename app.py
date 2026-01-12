@@ -45,8 +45,8 @@ if uploaded_file is not None:
         # TOP STATISTICS
         # ==================================================
         num_messages, words, num_media_messages, num_links, _ = helper.fetch_stats(
-    selected_user, df
-)
+            selected_user, df
+        )
 
 
         col1, col2, col3, col4 = st.columns(4)
