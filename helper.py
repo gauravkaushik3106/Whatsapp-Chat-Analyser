@@ -1,223 +1,231 @@
-import streamlit as st
-import preprocessor, helper
-import matplotlib.pyplot as plt
-import seaborn as sns
+from urlextract import URLExtract
+from wordcloud import WordCloud
+import pandas as pd
+from collections import Counter
+import emoji
 import numpy as np
 
-st.set_page_config(page_title="WhatsApp Chat Analyzer", layout="wide")
-st.sidebar.title("Whatsapp Chat Analyzer")
+# Sentiment
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+extract = URLExtract()
+analyzer = SentimentIntensityAnalyzer()
 
 # --------------------------------------------------
-# FILE UPLOAD
+# BASIC STATS
 # --------------------------------------------------
-uploaded_file = st.sidebar.file_uploader("Choose WhatsApp chat (.txt)")
+def fetch_stats(selected_user, df):
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
 
-if uploaded_file is not None:
-    bytes_data = uploaded_file.getvalue()
+    num_messages = df.shape[0]
 
-    # WhatsApp Android exports are UTF-16
-    try:
-        data = bytes_data.decode("utf-16")
-    except UnicodeDecodeError:
-        data = bytes_data.decode("utf-8", errors="ignore")
+    words = []
+    for message in df['message']:
+        words.extend(message.split())
 
-    df = preprocessor.preprocess(data)
+    num_media_messages = df[df['message'] == '<Media omitted>\n'].shape[0]
 
-    # ✅ ONLY reject truly empty parses
-    if df.shape[0] == 0:
-        st.error("Chat file has no readable messages.")
-        st.stop()
+    links = []
+    for message in df['message']:
+        links.extend(extract.find_urls(message))
 
-    # --------------------------------------------------
-    # USER SELECTION
-    # --------------------------------------------------
-    user_list = df['user'].unique().tolist()
-    if 'group_notification' in user_list:
-        user_list.remove('group_notification')
-    user_list.sort()
-    user_list.insert(0, "Overall")
+    return num_messages, len(words), num_media_messages, len(links)
 
-    selected_user = st.sidebar.selectbox("Show analysis for", user_list)
 
-    if st.sidebar.button("Show Analysis"):
+# --------------------------------------------------
+# MOST BUSY USERS
+# --------------------------------------------------
+def most_busy_users(df):
+    x = df['user'].value_counts().head()
 
-        # ==================================================
-        # TOP STATISTICS
-        # ==================================================
-        num_messages, words, num_media_messages, num_links = helper.fetch_stats(
-            selected_user, df
+    percent_df = (
+        df['user'].value_counts() / df.shape[0] * 100
+    ).round(2).reset_index()
+
+    percent_df.columns = ['name', 'percent']
+    return x, percent_df
+
+
+# --------------------------------------------------
+# WORDCLOUD
+# --------------------------------------------------
+def create_wordcloud(selected_user, df):
+    with open('stop_hinglish.txt', 'r') as f:
+        stop_words = f.read()
+
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
+
+    temp = df[(df['user'] != 'group_notification') &
+              (df['message'] != '<Media omitted>\n')]
+
+    def remove_stop_words(message):
+        return " ".join(
+            word for word in message.lower().split()
+            if word not in stop_words
         )
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Messages", num_messages)
-        col2.metric("Words", words)
-        col3.metric("Media", num_media_messages)
-        col4.metric("Links", num_links)
+    wc = WordCloud(
+        width=500,
+        height=500,
+        min_font_size=10,
+        background_color='white'
+    )
 
-        # ==================================================
-        # MONTHLY TIMELINE
-        # ==================================================
-        if df.shape[0] >= 5:
-            st.title("Monthly Timeline")
-            timeline = helper.monthly_timeline(selected_user, df)
-            fig, ax = plt.subplots()
-            ax.plot(timeline['time'], timeline['message'])
-            plt.xticks(rotation=90)
-            st.pyplot(fig)
+    temp = temp.copy()
+    temp['message'] = temp['message'].apply(remove_stop_words)
 
-        # ==================================================
-        # DAILY TIMELINE
-        # ==================================================
-        if df.shape[0] >= 5:
-            st.title("Daily Timeline")
-            daily = helper.daily_timeline(selected_user, df)
-            fig, ax = plt.subplots()
-            ax.plot(daily['only_date'], daily['message'])
-            plt.xticks(rotation=90)
-            st.pyplot(fig)
+    return wc.generate(temp['message'].str.cat(sep=" "))
 
-        # ==================================================
-        # ACTIVITY MAP
-        # ==================================================
-        st.title("Activity Map")
-        col1, col2 = st.columns(2)
 
-        with col1:
-            busy_day = helper.week_activity_map(selected_user, df)
-            fig, ax = plt.subplots()
-            ax.bar(busy_day.index, busy_day.values)
-            plt.xticks(rotation=90)
-            st.pyplot(fig)
+# --------------------------------------------------
+# MOST COMMON WORDS
+# --------------------------------------------------
+def most_common_words(selected_user, df):
+    with open('stop_hinglish.txt', 'r') as f:
+        stop_words = f.read()
 
-        with col2:
-            busy_month = helper.month_activity_map(selected_user, df)
-            fig, ax = plt.subplots()
-            ax.bar(busy_month.index, busy_month.values)
-            plt.xticks(rotation=90)
-            st.pyplot(fig)
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
 
-        # ==================================================
-        # WEEKLY HEATMAP
-        # ==================================================
-        if df.shape[0] >= 10:
-            st.title("Weekly Activity Map")
-            heatmap = helper.activity_heatmap(selected_user, df)
-            fig, ax = plt.subplots()
-            sns.heatmap(heatmap, ax=ax)
-            st.pyplot(fig)
+    temp = df[(df['user'] != 'group_notification') &
+              (df['message'] != '<Media omitted>\n')]
 
-        # ==================================================
-        # WORDCLOUD
-        # ==================================================
-        st.title("Wordcloud")
-        wc = helper.create_wordcloud(selected_user, df)
-        fig, ax = plt.subplots()
-        ax.imshow(wc)
-        ax.axis("off")
-        st.pyplot(fig)
+    words = []
+    for message in temp['message']:
+        for word in message.lower().split():
+            if word not in stop_words:
+                words.append(word)
 
-        # ==================================================
-        # EMOJI ANALYSIS
-        # ==================================================
-        st.title("Emoji Analysis")
-        emoji_df = helper.emoji_helper(selected_user, df)
+    return pd.DataFrame(Counter(words).most_common(20))
 
-        if not emoji_df.empty:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.dataframe(emoji_df)
 
-            with col2:
-                fig, ax = plt.subplots()
-                ax.pie(
-                    emoji_df[1].head(),
-                    labels=emoji_df[0].head(),
-                    autopct="%0.2f"
-                )
-                st.pyplot(fig)
-        else:
-            st.info("No emojis found in this chat.")
+# --------------------------------------------------
+# EMOJI ANALYSIS
+# --------------------------------------------------
+def emoji_helper(selected_user, df):
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
 
-        # ==================================================
-        # 🔥 EMOTION INTENSITY & EVENTS (SAFE + MEANINGFUL)
-        # ==================================================
-        st.title("Emotion Intensity & Conversation Events")
+    emojis = []
+    for message in df['message']:
+        emojis.extend([c for c in message if emoji.is_emoji(c)])
 
-        # ✅ Guard: small chats cannot support time-series analytics
-        if df.shape[0] < 10:
-            st.warning(
-                "Chat is too small for emotion intensity analysis. "
-                "Add more messages to detect emotional patterns."
-            )
-        else:
-            emotion_df = helper.compute_emotion_intensity(selected_user, df)
+    return pd.DataFrame(Counter(emojis).most_common())
 
-            # Remove NaN rows created by diff()
-            emotion_df = emotion_df.dropna(subset=['emotion_intensity'])
 
-            # Z-score normalization
-            mean_intensity = emotion_df['emotion_intensity'].mean()
-            std_intensity = emotion_df['emotion_intensity'].std()
+# --------------------------------------------------
+# TIMELINES
+# --------------------------------------------------
+def monthly_timeline(selected_user, df):
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
 
-            # Guard against zero variance
-            if std_intensity == 0 or np.isnan(std_intensity):
-                st.info("Not enough emotional variation to compute intensity.")
-            else:
-                emotion_df['z_intensity'] = (
-                    (emotion_df['emotion_intensity'] - mean_intensity)
-                    / std_intensity
-                )
+    timeline = (
+        df.groupby(['year', 'month_num', 'month'])
+          .count()['message']
+          .reset_index()
+    )
 
-                emotion_df['z_smooth'] = emotion_df['z_intensity'].rolling(12).mean()
-                events_df = helper.detect_emotional_events(emotion_df)
+    timeline['time'] = timeline['month'] + "-" + timeline['year'].astype(str)
+    return timeline
 
-                # ----------------- GRAPH -----------------
-                fig, ax = plt.subplots(figsize=(12, 4))
 
-                ax.plot(
-                    emotion_df['hour_block'],
-                    emotion_df['z_smooth'],
-                    color='black',
-                    linewidth=1.5,
-                    label='Smoothed Emotion Deviation'
-                )
+def daily_timeline(selected_user, df):
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
 
-                ax.axhline(2, color='red', linestyle='--', alpha=0.6)
-                ax.axhline(-2, color='green', linestyle='--', alpha=0.6)
+    return df.groupby('only_date').count()['message'].reset_index()
 
-                if not events_df.empty:
-                    colors = events_df['event_type'].apply(
-                        lambda x: 'red' if 'Negative' in x else 'green'
-                    )
-                    sizes = events_df['message_count'] * 8
 
-                    ax.scatter(
-                        events_df['hour_block'],
-                        (events_df['emotion_intensity'] - mean_intensity) / std_intensity,
-                        c=colors,
-                        s=sizes,
-                        alpha=0.7,
-                        label='Detected Events'
-                    )
+# --------------------------------------------------
+# ACTIVITY MAPS
+# --------------------------------------------------
+def week_activity_map(selected_user, df):
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
+    return df['day_name'].value_counts()
 
-                ax.set_title("Conversation Emotion Dynamics")
-                ax.set_ylabel("Emotion Deviation (Z-score)")
-                ax.set_xlabel("Time")
-                ax.legend()
-                plt.xticks(rotation=90)
-                st.pyplot(fig)
 
-                # ----------------- TABLE -----------------
-                st.subheader("Detected Emotional Events")
+def month_activity_map(selected_user, df):
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
+    return df['month'].value_counts()
 
-                def highlight_events(row):
-                    if "Negative" in row["event_type"]:
-                        return ["background-color: #ffe6e6; color: black"] * len(row)
-                    else:
-                        return ["background-color: #e6ffe6; color: black"] * len(row)
 
-                if not events_df.empty:
-                    styled_df = events_df.style.apply(highlight_events, axis=1)
-                    st.dataframe(styled_df, use_container_width=True)
-                else:
-                    st.info("No statistically significant emotional events detected.")
+def activity_heatmap(selected_user, df):
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
+
+    return df.pivot_table(
+        index='day_name',
+        columns='period',
+        values='message',
+        aggfunc='count'
+    ).fillna(0)
+
+
+# ==================================================
+# 🔥 EMOTION INTENSITY MODEL (IDEA 1 – FINAL)
+# ==================================================
+
+def compute_emotion_intensity(selected_user, df):
+    """
+    Returns hourly emotion intensity scores
+    """
+
+    if selected_user != 'Overall':
+        df = df[df['user'] == selected_user]
+
+    df = df.copy()
+
+    # Sentiment per message
+    df['sentiment'] = df['message'].apply(
+        lambda x: analyzer.polarity_scores(x)['compound']
+    )
+
+    # Hourly bucket
+    df['hour_block'] = df['date'].dt.floor('H')
+
+    grouped = df.groupby('hour_block').agg(
+        avg_sentiment=('sentiment', 'mean'),
+        message_count=('message', 'count'),
+        unique_users=('user', 'nunique')
+    ).reset_index()
+
+    # Sentiment change
+    grouped['sentiment_delta'] = grouped['avg_sentiment'].diff()
+
+    # Emotion intensity score
+    grouped['emotion_intensity'] = (
+        grouped['sentiment_delta'].abs()
+        * np.log1p(grouped['message_count'])
+        * grouped['unique_users']
+    )
+
+    return grouped
+
+
+def detect_emotional_events(emotion_df, top_percentile=95):
+    """
+    Detect top emotional events based on intensity
+    """
+
+    threshold = np.percentile(
+        emotion_df['emotion_intensity'].dropna(),
+        top_percentile
+    )
+
+    events = emotion_df[
+        emotion_df['emotion_intensity'] >= threshold
+    ].copy()
+
+    events['event_type'] = events['sentiment_delta'].apply(
+        lambda x: 'Positive Surge 😊' if x > 0 else 'Negative Surge 😠'
+    )
+
+    return events[
+        ['hour_block', 'emotion_intensity',
+         'message_count', 'unique_users', 'event_type']
+    ]
